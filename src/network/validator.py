@@ -1,7 +1,8 @@
-import socket
 import json
+import os
+import socket
 import threading
-from typing import Dict, Any
+from typing import Dict, List, Any
 
 from blockchain.core import DOUBlockchain
 from messaging.system import DOUMessaging
@@ -10,18 +11,35 @@ from rewards.system import DOURewardSystem
 class ValidatorNode:
     def __init__(self, 
                  host: str = '0.0.0.0', 
-                 port: int = 5001,
+                 port: int = 5001, 
+                 data_dir: str = None,
                  validator_address: str = None):
         """
-        Initialize validator node
+        Initialize Validator Node with enhanced history tracking
         
-        :param host: Host to bind the server
+        :param host: Host to bind the validator
         :param port: Port to listen on
+        :param data_dir: Directory to store persistent data
         :param validator_address: DOU address of the validator
         """
         self.host = host
         self.port = port
         self.validator_address = validator_address
+        
+        # Use environment variable or default path
+        self.data_dir = data_dir or os.environ.get(
+            'DOU_DATA_DIR', 
+            os.path.expanduser('~/.dou_blockchain')
+        )
+        os.makedirs(self.data_dir, exist_ok=True)
+        
+        # Persistent storage paths
+        self.users_path = os.path.join(self.data_dir, 'users.json')
+        self.messages_path = os.path.join(self.data_dir, 'messages.json')
+        self.blockchain_path = os.path.join(self.data_dir, 'blockchain.json')
+        
+        # Initialize storage
+        self._init_storage()
         
         # Blockchain components
         self.blockchain = DOUBlockchain()
@@ -36,6 +54,112 @@ class ValidatorNode:
         self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.server_socket.bind((self.host, self.port))
+    
+    def _init_storage(self):
+        """Initialize storage files if they don't exist"""
+        for path in [self.users_path, self.messages_path, self.blockchain_path]:
+            if not os.path.exists(path):
+                with open(path, 'w') as f:
+                    json.dump([], f)
+    
+    def get_all_addresses(self) -> List[str]:
+        """
+        Retrieve all registered addresses across all machines
+        
+        :return: List of all unique addresses
+        """
+        try:
+            with open(self.users_path, 'r') as f:
+                users = json.load(f)
+            return [user['address'] for user in users]
+        except (FileNotFoundError, json.JSONDecodeError):
+            return []
+    
+    def get_user_history(self, address: str) -> Dict[str, Any]:
+        """
+        Get comprehensive history for a specific address
+        
+        :param address: User's blockchain address
+        :return: Dictionary with user's history
+        """
+        try:
+            with open(self.users_path, 'r') as f:
+                users = json.load(f)
+            
+            with open(self.messages_path, 'r') as m:
+                messages = json.load(m)
+            
+            user_history = {
+                'address': address,
+                'total_messages_sent': 0,
+                'total_messages_received': 0,
+                'messages': []
+            }
+            
+            for msg in messages:
+                if msg['sender'] == address:
+                    user_history['total_messages_sent'] += 1
+                    user_history['messages'].append({
+                        'type': 'sent',
+                        'content': msg['content'],
+                        'timestamp': msg['timestamp']
+                    })
+                if msg['recipient'] == address:
+                    user_history['total_messages_received'] += 1
+                    user_history['messages'].append({
+                        'type': 'received',
+                        'content': msg['content'],
+                        'timestamp': msg['timestamp']
+                    })
+            
+            return user_history
+        
+        except (FileNotFoundError, json.JSONDecodeError):
+            return {
+                'address': address,
+                'error': 'No history found'
+            }
+    
+    def sync_network_data(self, other_validator_host: str):
+        """
+        Synchronize data with another validator node
+        
+        :param other_validator_host: IP:Port of another validator
+        """
+        try:
+            host, port = other_validator_host.split(':')
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.connect((host, int(port)))
+                
+                # Request and sync users
+                s.send(b'SYNC_USERS')
+                users_data = s.recv(4096)
+                with open(self.users_path, 'wb') as f:
+                    f.write(users_data)
+                
+                # Request and sync messages
+                s.send(b'SYNC_MESSAGES')
+                messages_data = s.recv(4096)
+                with open(self.messages_path, 'wb') as f:
+                    f.write(messages_data)
+        
+        except Exception as e:
+            print(f"Sync failed: {e}")
+    
+    def cli_query(self, query_type: str, param: str = None):
+        """
+        CLI interface for querying validator data
+        
+        :param query_type: Type of query (addresses, history)
+        :param param: Optional parameter (like address for history)
+        """
+        if query_type == 'addresses':
+            return self.get_all_addresses()
+        
+        if query_type == 'history' and param:
+            return self.get_user_history(param)
+        
+        return {"error": "Invalid query"}
     
     def validate_message(self, message: Dict[str, Any]) -> bool:
         """
