@@ -2,6 +2,9 @@ import argparse
 import json
 import sys
 import os
+import base64
+import socket
+import time
 
 # Ensure the project root is in Python path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '.')))
@@ -10,12 +13,11 @@ from src.network.validator import ValidatorNode
 from src.network.relay import NetworkRelay
 from src.blockchain.core import DOUBlockchain
 from src.messaging.system import DOUMessaging
-from src.rewards.system import DOURewardSystem
-from src.cryptography.hazmat.primitives.asymmetric import ec
-from src.cryptography.hazmat.primitives import serialization
-from src.base64 import base64
-from src.socket import socket
-from src.time import time
+from src.rewards.system import DOURewards
+
+# Use standard library cryptography
+from cryptography.hazmat.primitives.asymmetric import ec
+from cryptography.hazmat.primitives import serialization
 
 class DOUBlockchainCLI:
     def __init__(self):
@@ -31,7 +33,7 @@ class DOUBlockchainCLI:
         
         self.blockchain = DOUBlockchain()
         self.messaging = DOUMessaging()
-        self.rewards = DOURewardSystem()
+        self.rewards = DOURewards()
         
         # Use data directory for users file
         self.users_file = os.path.join(self.data_dir, 'users.json')
