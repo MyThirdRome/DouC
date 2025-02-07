@@ -1,21 +1,21 @@
 import argparse
+import json
 import sys
 import os
-import json
-import base64
-import socket
-import time
 
-# Add the src directory to Python path
-sys.path.append(os.path.join(os.path.dirname(__file__), 'src'))
+# Ensure the project root is in Python path
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '.')))
 
-from blockchain.core import DOUBlockchain
-from messaging.system import DOUMessaging
-from rewards.system import DOURewardSystem
-from network.relay import NetworkRelay
-from cryptography.hazmat.primitives.asymmetric import ec
-from cryptography.hazmat.primitives import serialization
-from network.validator import ValidatorNode
+from src.network.validator import ValidatorNode
+from src.network.relay import NetworkRelay
+from src.blockchain.core import DOUBlockchain
+from src.messaging.system import DOUMessaging
+from src.rewards.system import DOURewardSystem
+from src.cryptography.hazmat.primitives.asymmetric import ec
+from src.cryptography.hazmat.primitives import serialization
+from src.base64 import base64
+from src.socket import socket
+from src.time import time
 
 class DOUBlockchainCLI:
     def __init__(self):

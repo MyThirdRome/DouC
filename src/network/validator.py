@@ -4,9 +4,9 @@ import socket
 import threading
 from typing import Dict, List, Any
 
-from ..blockchain.core import DOUBlockchain
-from ..messaging.system import DOUMessaging
-from ..rewards.system import DOURewardSystem
+from src.blockchain.core import DOUBlockchain
+from src.messaging.system import DOUMessaging
+from src.rewards.system import DOURewardSystem
 
 class ValidatorNode:
     def __init__(self, 
