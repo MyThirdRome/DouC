@@ -25,18 +25,19 @@ class ValidatorNode:
                  host: str = '0.0.0.0', 
                  port: int = 5001, 
                  data_dir: str = None,
-                 validator_address: str = None):
+                 validator_address: str = None,
+                 max_port_attempts: int = 10):
         """
         Initialize Validator Node with enhanced history tracking
         
         :param host: Host to bind the validator
-        :param port: Port to listen on
+        :param port: Initial port to try
         :param data_dir: Directory to store persistent data
         :param validator_address: DOU address of the validator
+        :param max_port_attempts: Maximum number of port attempts
         """
         try:
             self.host = host
-            self.port = port
             self.validator_address = validator_address
             
             # Use environment variable or default path
@@ -59,20 +60,19 @@ class ValidatorNode:
             self.messaging = DOUMessaging()
             self.rewards = DOURewardSystem()
             
-            # Validator registration
-            if validator_address:
-                self.blockchain.register_validator(validator_address, 100)  # Default 100 DOU stake
+            # Dynamic port selection
+            self.port = self._find_available_port(host, port, max_port_attempts)
             
             # Network setup
             self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             
-            logger.info(f"Binding validator to {host}:{port}")
+            logger.info(f"Binding validator to {host}:{self.port}")
             self.server_socket.bind((self.host, self.port))
             
             # Start listening
             self.server_socket.listen(5)
-            logger.info(f"Validator node started on {host}:{port}")
+            logger.info(f"Validator node started on {host}:{self.port}")
             
             # Start accepting connections
             self._start_server()
@@ -80,6 +80,28 @@ class ValidatorNode:
         except Exception as e:
             logger.error(f"Failed to initialize validator: {e}")
             raise
+    
+    def _find_available_port(self, host: str, initial_port: int, max_attempts: int = 10) -> int:
+        """
+        Find an available port by trying sequential ports
+        
+        :param host: Host to bind
+        :param initial_port: Starting port to try
+        :param max_attempts: Maximum number of port attempts
+        :return: Available port number
+        """
+        current_port = initial_port
+        for attempt in range(max_attempts):
+            try:
+                test_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                test_socket.bind((host, current_port))
+                test_socket.close()
+                return current_port
+            except OSError:
+                logger.warning(f"Port {current_port} in use, trying next")
+                current_port += 1
+        
+        raise RuntimeError(f"Could not find an available port after {max_attempts} attempts")
     
     def _start_server(self):
         """
