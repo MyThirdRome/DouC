@@ -3,22 +3,89 @@ import os
 import socket
 import threading
 import logging
+import time
 from typing import Dict, List, Any
+import fcntl
+import sys
+import argparse
 
 from src.blockchain.core import DOUBlockchain
 from src.messaging.system import DOUMessaging
 from src.rewards.system import DOURewardSystem
 
 # Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler('/tmp/dou_validator.log'),
-        logging.StreamHandler()  # This will print to console
-    ]
-)
-logger = logging.getLogger('ValidatorNode')
+def configure_logging(verbose=False):
+    """
+    Configure logging for the validator
+    
+    :param verbose: Enable debug logging
+    """
+    # Base logging configuration
+    log_level = logging.DEBUG if verbose else logging.INFO
+    logging.basicConfig(
+        level=log_level,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        handlers=[
+            # Log to console
+            logging.StreamHandler(sys.stdout),
+            # Log to file
+            logging.FileHandler('/tmp/dou_validator.log', mode='a')
+        ]
+    )
+    
+    # Set logger for key components
+    logging.getLogger('ValidatorNode').setLevel(log_level)
+    logging.getLogger('DOUBlockchain').setLevel(log_level)
+    logging.getLogger('DOUMessaging').setLevel(log_level)
+
+class ValidatorLock:
+    """
+    Ensure only one validator instance runs at a time
+    """
+    def __init__(self, lock_file='/tmp/dou_validator.lock'):
+        """
+        Create a file-based lock to prevent multiple validator instances
+        
+        :param lock_file: Path to the lock file
+        """
+        self.lock_file = lock_file
+        self.lock_handle = None
+    
+    def acquire(self):
+        """
+        Acquire the validator lock
+        
+        :raises RuntimeError: If another validator is already running
+        """
+        try:
+            self.lock_handle = open(self.lock_file, 'w')
+            try:
+                # Try to acquire an exclusive, non-blocking lock
+                fcntl.flock(self.lock_handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except (IOError, OSError):
+                self.lock_handle.close()
+                raise RuntimeError("Another validator instance is already running")
+            
+            # Write current process ID
+            self.lock_handle.write(str(os.getpid()))
+            self.lock_handle.flush()
+            logger.info(f"Validator lock acquired. PID: {os.getpid()}")
+        except Exception as e:
+            logger.error(f"Failed to acquire validator lock: {e}")
+            raise
+    
+    def release(self):
+        """
+        Release the validator lock
+        """
+        try:
+            if self.lock_handle:
+                fcntl.flock(self.lock_handle.fileno(), fcntl.LOCK_UN)
+                self.lock_handle.close()
+                os.unlink(self.lock_file)
+                logger.info("Validator lock released")
+        except Exception as e:
+            logger.error(f"Error releasing validator lock: {e}")
 
 class ValidatorNode:
     def __init__(self, 
@@ -28,15 +95,22 @@ class ValidatorNode:
                  validator_address: str = None,
                  max_port_attempts: int = 10):
         """
-        Initialize Validator Node with enhanced history tracking
-        
-        :param host: Host to bind the validator
-        :param port: Initial port to try
-        :param data_dir: Directory to store persistent data
-        :param validator_address: DOU address of the validator
-        :param max_port_attempts: Maximum number of port attempts
+        Initialize Validator Node with process locking
         """
+        # Acquire validator lock before initialization
+        self.validator_lock = ValidatorLock()
         try:
+            self.validator_lock.acquire()
+        except RuntimeError as e:
+            logger.error(str(e))
+            sys.exit(1)
+        
+        try:
+            # Use environment variables if set
+            env_host = os.environ.get('DOU_VALIDATOR_HOST', f'{host}:{port}')
+            host, port = env_host.split(':')
+            port = int(port)
+            
             self.host = host
             self.validator_address = validator_address
             
@@ -51,9 +125,15 @@ class ValidatorNode:
             self.users_path = os.path.join(self.data_dir, 'users.json')
             self.messages_path = os.path.join(self.data_dir, 'messages.json')
             self.blockchain_path = os.path.join(self.data_dir, 'blockchain.json')
+            self.port_file = os.path.join(self.data_dir, 'validator_port.txt')
             
             # Initialize storage
             self._init_storage()
+            
+            # Load saved port if available
+            saved_port = self._load_saved_port()
+            if saved_port:
+                port = saved_port
             
             # Blockchain components
             self.blockchain = DOUBlockchain()
@@ -61,23 +141,31 @@ class ValidatorNode:
             self.rewards = DOURewardSystem()
             
             # Dynamic port selection
-            self.port = self._find_available_port(host, port, max_port_attempts)
+            self.port = self._find_available_port(self.host, port, max_port_attempts)
+            
+            # Persist selected port
+            self._save_port()
             
             # Network setup
             self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             
-            logger.info(f"Binding validator to {host}:{self.port}")
+            logger.info(f"Binding validator to {self.host}:{self.port}")
             self.server_socket.bind((self.host, self.port))
             
             # Start listening
-            self.server_socket.listen(5)
-            logger.info(f"Validator node started on {host}:{self.port}")
+            self.server_socket.listen(50)
+            logger.info(f"Validator node started on {self.host}:{self.port}")
+            
+            # Update environment variable
+            os.environ['DOU_VALIDATOR_HOST'] = f'{self.host}:{self.port}'
             
             # Start accepting connections
             self._start_server()
         
         except Exception as e:
+            # Ensure lock is released on any initialization error
+            self.validator_lock.release()
             logger.error(f"Failed to initialize validator: {e}")
             raise
     
@@ -102,25 +190,41 @@ class ValidatorNode:
                 current_port += 1
         
         raise RuntimeError(f"Could not find an available port after {max_attempts} attempts")
-    
+
     def _start_server(self):
         """
         Start the server in a separate thread to accept connections
         """
         try:
+            # Bind to all interfaces
+            self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            
+            # Bind to all available interfaces
+            self.server_socket.bind(('0.0.0.0', self.port))
+            
+            # Listen with a larger backlog
+            self.server_socket.listen(50)
+            
+            logger.info(f"Server listening on all interfaces, port {self.port}")
+            
+            # Start accepting connections
             server_thread = threading.Thread(target=self._accept_connections)
             server_thread.daemon = True
             server_thread.start()
+            
             logger.info("Server thread started successfully")
         except Exception as e:
-            logger.error(f"Failed to start server thread: {e}")
+            logger.error(f"Failed to start server: {e}")
+            raise
     
     def _accept_connections(self):
         """
-        Accept incoming network connections
+        Accept incoming network connections with enhanced logging
         """
         while True:
             try:
+                # Accept connection
                 client_socket, address = self.server_socket.accept()
                 logger.info(f"Accepted connection from {address}")
                 
@@ -132,22 +236,67 @@ class ValidatorNode:
                 client_thread.start()
             except Exception as e:
                 logger.error(f"Error accepting connection: {e}")
+                # Prevent tight loop in case of persistent error
+                time.sleep(1)
     
     def _handle_client(self, client_socket, address):
         """
-        Handle individual client connections
+        Handle individual client connections with enhanced logging
+        
+        :param client_socket: Connected client socket
+        :param address: Client address tuple
         """
         try:
-            # Receive data from client
-            data = client_socket.recv(1024).decode('utf-8')
+            logger.info(f"Received connection from {address}")
+            
+            # Set socket timeout
+            client_socket.settimeout(10)
+            
+            # Receive data
+            data = client_socket.recv(4096).decode('utf-8')
             logger.info(f"Received data from {address}: {data}")
             
-            # Process the received data
-            # Add your network sync logic here
+            # Parse message
+            try:
+                message = json.loads(data)
+                
+                # Validate message
+                if self.validate_message(message):
+                    # Process message
+                    self.process_message(message)
+                    
+                    # Prepare response
+                    response = {
+                        'status': 'validated',
+                        'message_id': message.get('message_id', 'unknown')
+                    }
+                    client_socket.send(json.dumps(response).encode('utf-8'))
+                    logger.info(f"Sent validation response to {address}")
+                else:
+                    # Invalid message
+                    response = {
+                        'status': 'invalid',
+                        'message_id': message.get('message_id', 'unknown')
+                    }
+                    client_socket.send(json.dumps(response).encode('utf-8'))
+                    logger.warning(f"Invalid message from {address}")
             
-            client_socket.close()
+            except json.JSONDecodeError:
+                logger.error(f"Failed to decode JSON from {address}")
+                client_socket.send(json.dumps({
+                    'status': 'error',
+                    'message': 'Invalid JSON'
+                }).encode('utf-8'))
+        
+        except socket.timeout:
+            logger.error(f"Connection from {address} timed out")
         except Exception as e:
             logger.error(f"Error handling client {address}: {e}")
+        finally:
+            try:
+                client_socket.close()
+            except:
+                pass
     
     def _init_storage(self):
         """Initialize storage files if they don't exist"""
@@ -334,24 +483,114 @@ class ValidatorNode:
             logger.info(f"Processed message from {message['sender']} to {message['recipient']}")
             logger.info(f"Reward: {message_reward} DOU")
     
-    def run(self):
-        """Start the validator node"""
-        server_thread = threading.Thread(target=self.start_server)
-        server_thread.start()
-        return server_thread
+    def _save_port(self):
+        """
+        Save the current port to a persistent file
+        """
+        try:
+            with open(self.port_file, 'w') as f:
+                f.write(str(self.port))
+            logger.info(f"Saved validator port {self.port} to {self.port_file}")
+        except Exception as e:
+            logger.error(f"Failed to save port: {e}")
 
-# Main execution
-if __name__ == '__main__':
-    try:
-        # Get host and port from environment or use defaults
-        host = os.environ.get('DOU_VALIDATOR_HOST', '0.0.0.0').split(':')[0]
-        port = int(os.environ.get('DOU_VALIDATOR_HOST', '0.0.0.0:5001').split(':')[1])
+    def _load_saved_port(self):
+        """
+        Load previously saved port if available
         
-        validator = ValidatorNode(host=host, port=port)
-        
-        # Keep the main thread running
-        while True:
+        :return: Saved port or None
+        """
+        try:
+            if os.path.exists(self.port_file):
+                with open(self.port_file, 'r') as f:
+                    saved_port = int(f.read().strip())
+                    logger.info(f"Loaded saved port: {saved_port}")
+                    return saved_port
+        except Exception as e:
+            logger.error(f"Error loading saved port: {e}")
+        return None
+
+    def run(self):
+        """
+        Start the validator node with proper cleanup
+        """
+        try:
+            # Start validator logic
+            server_thread = threading.Thread(target=self.start_server)
+            server_thread.start()
+            
+            # Wait for server thread
+            server_thread.join()
+        except KeyboardInterrupt:
+            logger.info("Validator interrupted by user")
+        except Exception as e:
+            logger.error(f"Validator runtime error: {e}")
+        finally:
+            # Always release the lock
+            self.validator_lock.release()
+            logger.info("Validator node shutting down")
+    
+    def __del__(self):
+        """
+        Ensure lock is released when object is deleted
+        """
+        try:
+            self.validator_lock.release()
+        except:
             pass
+
+# Main execution block
+if __name__ == '__main__':
+    # Parse command-line arguments
+    parser = argparse.ArgumentParser(description='DOU Blockchain Validator Node')
+    parser.add_argument('--verbose', action='store_true', 
+                        help='Enable verbose logging')
+    parser.add_argument('--host', type=str, default='0.0.0.0', 
+                        help='Host to bind validator')
+    parser.add_argument('--port', type=int, default=5001, 
+                        help='Initial port to try')
+    
+    # Parse arguments
+    args = parser.parse_args()
+    
+    # Configure logging based on verbosity
+    configure_logging(args.verbose)
+    
+    # Log startup information
+    logger = logging.getLogger('ValidatorNode')
+    logger.info("=" * 50)
+    logger.info("DOU Blockchain Validator Node")
+    logger.info("=" * 50)
+    logger.info(f"Starting validator on {args.host}:{args.port}")
+    logger.info(f"Verbose mode: {'Enabled' if args.verbose else 'Disabled'}")
+    
+    try:
+        # Create validator instance
+        validator = ValidatorNode(
+            host=args.host, 
+            port=args.port
+        )
+        
+        # Run validator
+        validator.run()
+    
     except Exception as e:
-        logger.error(f"Validator startup failed: {e}")
-        raise
+        # Comprehensive error logging
+        logger.error("Critical error during validator startup")
+        logger.error(f"Error details: {e}")
+        logger.error("Traceback:", exc_info=True)
+        
+        # Attempt to log system details
+        try:
+            import platform
+            logger.error(f"System: {platform.system()}")
+            logger.error(f"Python version: {platform.python_version()}")
+        except:
+            pass
+        
+        # Exit with error code
+        sys.exit(1)
+    
+    # Graceful shutdown
+    logger.info("Validator node shutdown complete")
+    sys.exit(0)

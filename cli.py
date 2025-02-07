@@ -291,10 +291,45 @@ class DOUBlockchainCLI:
             return False
 
     def list_addresses(self, args):
-        """List all blockchain addresses"""
-        validator = ValidatorNode()
-        addresses = validator.cli_query('addresses')
-        print(json.dumps(addresses, indent=2))
+        """
+        List all blockchain addresses from local storage
+        
+        :param args: Command-line arguments (not used)
+        """
+        try:
+            # Path to users file
+            users_path = os.path.join(
+                os.environ.get('DOU_DATA_DIR', os.path.expanduser('~/.dou_blockchain')), 
+                'users.json'
+            )
+            
+            # Ensure directory exists
+            os.makedirs(os.path.dirname(users_path), exist_ok=True)
+            
+            # Read users from file
+            if os.path.exists(users_path):
+                with open(users_path, 'r') as f:
+                    users = json.load(f)
+                
+                # Print addresses
+                print("Registered Blockchain Addresses:")
+                for address in users:
+                    print(f"- {address}")
+                
+                return list(users.keys())
+            else:
+                print("No addresses found. Create a new user first.")
+                return []
+        
+        except FileNotFoundError:
+            print("Users file not found. No addresses available.")
+            return []
+        except json.JSONDecodeError:
+            print("Error reading users file. File may be corrupted.")
+            return []
+        except Exception as e:
+            print(f"Unexpected error listing addresses: {e}")
+            return []
 
     def user_history(self, args):
         """Get user message history"""
