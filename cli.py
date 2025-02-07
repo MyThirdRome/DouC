@@ -215,6 +215,81 @@ class DOUBlockchainCLI:
         except Exception as e:
             print(f"Network message error: {e}")
 
+    def network_send(self, recipient_address: str, message_content: str):
+        """
+        Send a network message to a recipient
+        
+        :param recipient_address: Recipient's DOU address
+        :param message_content: Message to send
+        """
+        try:
+            # Validate recipient address format
+            if not recipient_address.startswith('DOU-'):
+                print(f"Invalid recipient address: {recipient_address}")
+                return False
+            
+            # Prepare message payload
+            message_tx = {
+                'sender': self.get_user_address(),
+                'recipient': recipient_address,
+                'content': message_content,
+                'timestamp': int(time.time()),
+                'message_id': base64.b64encode(os.urandom(16)).decode('utf-8')
+            }
+            
+            # Get validator host from environment
+            validator_host = os.environ.get('DOU_VALIDATOR_HOST', '185.231.69.55:5001')
+            host, port = validator_host.split(':')
+            port = int(port)
+            
+            print(f"Attempting to send message to validator at {host}:{port}")
+            
+            # Create socket connection
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as client_socket:
+                try:
+                    # Set timeout to prevent hanging
+                    client_socket.settimeout(10)
+                    
+                    # Connect to validator
+                    client_socket.connect((host, port))
+                    print(f"Connected to validator successfully")
+                    
+                    # Send message
+                    message_json = json.dumps(message_tx)
+                    client_socket.send(message_json.encode('utf-8'))
+                    print(f"Message sent: {message_json}")
+                    
+                    # Receive response
+                    response = client_socket.recv(4096).decode('utf-8')
+                    response_data = json.loads(response)
+                    
+                    # Check response status
+                    if response_data.get('status') == 'validated':
+                        print(f"Message validated. Message ID: {response_data.get('message_id')}")
+                        
+                        # Update local message history
+                        self._update_message_history(message_tx)
+                        return True
+                    else:
+                        print(f"Message validation failed: {response}")
+                        return False
+                
+                except (socket.timeout, ConnectionRefusedError) as conn_error:
+                    print(f"Network connection error: {conn_error}")
+                    print(f"Validator host: {host}:{port}")
+                    print("Possible issues:")
+                    print("1. Validator not running")
+                    print("2. Incorrect host/port")
+                    print("3. Firewall blocking connection")
+                    return False
+                except Exception as e:
+                    print(f"Unexpected error sending message: {e}")
+                    return False
+        
+        except Exception as e:
+            print(f"Network message error: {e}")
+            return False
+
     def list_addresses(self, args):
         """List all blockchain addresses"""
         validator = ValidatorNode()

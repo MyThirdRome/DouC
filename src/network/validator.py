@@ -220,11 +220,15 @@ class ValidatorNode:
     
     def cli_query(self, query_type: str, param: str = None):
         """
-        CLI interface for querying validator data
+        Handle CLI queries from the validator
         
-        :param query_type: Type of query (addresses, history)
-        :param param: Optional parameter (like address for history)
+        :param query_type: Type of query (e.g., 'list_addresses')
+        :param param: Optional parameter for the query
+        :return: Query result
         """
+        if query_type == 'list_addresses':
+            return self.list_network_addresses()
+        
         if query_type == 'addresses':
             return self.get_all_addresses()
         
@@ -232,6 +236,37 @@ class ValidatorNode:
             return self.get_user_history(param)
         
         return {"error": "Invalid query"}
+    
+    def list_network_addresses(self):
+        """
+        List all registered network addresses
+        
+        :return: List of registered addresses
+        """
+        try:
+            # Read users from persistent storage
+            with open(self.users_path, 'r') as f:
+                users = json.load(f)
+                
+            # Log and print addresses
+            logger.info(f"Network Addresses ({len(users)}):")
+            for address in users:
+                logger.info(address)
+                print(address)
+            
+            return list(users.keys())
+        except FileNotFoundError:
+            logger.warning("No users file found")
+            print("No users registered in the network")
+            return []
+        except json.JSONDecodeError:
+            logger.error("Error decoding users file")
+            print("Error reading network addresses")
+            return []
+        except Exception as e:
+            logger.error(f"Unexpected error listing addresses: {e}")
+            print(f"Error listing network addresses: {e}")
+            return []
     
     def validate_message(self, message: Dict[str, Any]) -> bool:
         """
