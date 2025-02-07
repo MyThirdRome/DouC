@@ -13,7 +13,7 @@ from src.network.validator import ValidatorNode
 from src.network.relay import NetworkRelay
 from src.blockchain.core import DOUBlockchain
 from src.messaging.system import DOUMessaging
-from src.rewards.system import DOURewards
+from src.rewards.system import DOURewardSystem
 
 # Use standard library cryptography
 from cryptography.hazmat.primitives.asymmetric import ec
@@ -33,7 +33,7 @@ class DOUBlockchainCLI:
         
         self.blockchain = DOUBlockchain()
         self.messaging = DOUMessaging()
-        self.rewards = DOURewards()
+        self.rewards = DOURewardSystem()
         
         # Use data directory for users file
         self.users_file = os.path.join(self.data_dir, 'users.json')
