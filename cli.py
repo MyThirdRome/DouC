@@ -15,6 +15,7 @@ from rewards.system import DOURewardSystem
 from network.relay import NetworkRelay
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives import serialization
+from network.validator import ValidatorNode
 
 class DOUBlockchainCLI:
     def __init__(self):
@@ -212,10 +213,28 @@ class DOUBlockchainCLI:
         except Exception as e:
             print(f"Network message error: {e}")
 
+    def list_addresses(self, args):
+        """List all blockchain addresses"""
+        validator = ValidatorNode()
+        addresses = validator.cli_query('addresses')
+        print(json.dumps(addresses, indent=2))
+
+    def user_history(self, args):
+        """Get user message history"""
+        validator = ValidatorNode()
+        history = validator.cli_query('history', args.address)
+        print(json.dumps(history, indent=2))
+
+    def sync_network(self, args):
+        """Sync data with another validator"""
+        validator = ValidatorNode()
+        validator.sync_network_data(args.validator_host)
+        print(f"Synced network data with {args.validator_host}")
+
     def run(self):
         """Run the CLI"""
         parser = argparse.ArgumentParser(description="DOU Blockchain CLI")
-        subparsers = parser.add_subparsers(help='Commands')
+        subparsers = parser.add_subparsers(dest='command', help='Commands')
 
         # Create user command
         create_parser = subparsers.add_parser('create', help='Create a new user')
@@ -244,6 +263,18 @@ class DOUBlockchainCLI:
         network_parser.add_argument('recipient', type=str, help='Recipient DOU address')
         network_parser.add_argument('message', type=str, help='Message to send')
         network_parser.set_defaults(func=self.send_network_message)
+
+        # Validator query commands
+        addresses_parser = subparsers.add_parser('list_addresses', help='List all blockchain addresses')
+        addresses_parser.set_defaults(func=self.list_addresses)
+
+        history_parser = subparsers.add_parser('user_history', help='Get user message history')
+        history_parser.add_argument('address', help='Blockchain address to query')
+        history_parser.set_defaults(func=self.user_history)
+
+        sync_parser = subparsers.add_parser('sync_network', help='Sync data with another validator')
+        sync_parser.add_argument('validator_host', help='Validator host to sync with (IP:PORT)')
+        sync_parser.set_defaults(func=self.sync_network)
 
         # Parse arguments
         args = parser.parse_args()
