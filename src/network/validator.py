@@ -218,6 +218,44 @@ class ValidatorNode:
             logger.error(f"Failed to start server: {e}")
             raise
     
+    def start_server(self):
+        """
+        Start the server and accept connections
+        """
+        try:
+            # Bind to all interfaces
+            self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            
+            # Bind to all available interfaces
+            self.server_socket.bind((self.host, self.port))
+            
+            # Listen with a larger backlog
+            self.server_socket.listen(50)
+            
+            logger.info(f"Server listening on all interfaces, port {self.port}")
+            
+            # Accept connections
+            while True:
+                try:
+                    # Accept connection
+                    client_socket, address = self.server_socket.accept()
+                    logger.info(f"Accepted connection from {address}")
+                    
+                    # Handle connection in a separate thread
+                    client_thread = threading.Thread(
+                        target=self._handle_client, 
+                        args=(client_socket, address)
+                    )
+                    client_thread.start()
+                except Exception as e:
+                    logger.error(f"Error accepting connection: {e}")
+                    # Prevent tight loop in case of persistent error
+                    time.sleep(1)
+        except Exception as e:
+            logger.error(f"Server startup failed: {e}")
+            raise
+
     def _accept_connections(self):
         """
         Accept incoming network connections with enhanced logging

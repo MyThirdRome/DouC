@@ -10,10 +10,6 @@ setup(
     author_email='your.email@example.com',
     url='https://github.com/yourusername/dou-blockchain',
     install_requires=[
-        'socket',
-        'json',
-        'logging',
-        'threading',
         'cryptography',
         'pytest',
         'mypy'
